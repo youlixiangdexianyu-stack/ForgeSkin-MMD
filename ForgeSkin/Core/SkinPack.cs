@@ -318,6 +318,9 @@ public sealed class SkinPack : IDisposable
                 if (!In(s.Restore, 0, 1) || !In(s.StyleLeash, 0, 1) || !In(s.Inertia, 0, 1) || !In(s.AzimuthLimit, 0, 180)
                     || !In(s.Step, 1f / 480, 1f / 60) || !InCount(s.Iterations, 1, 12) || !InCount(s.LengthPasses, 1, 8))
                     Bad("bad-character-spring", $"spring {s.Id}: restore, style leash and inertia 0 to 1, azimuth limit 0 to 180, step 1/480 to 1/60 s, iterations 1 to 12, length passes 1 to 8");
+                if (s.Fabric is { } fabric && fabric.Any(f => !s.Strands.Any(b => b.Contains(f.Key)) || f.Value is not { Length: > 0 } v || v.Length % 4 != 0
+                        || !v.All(float.IsFinite) || Enumerable.Range(0, v.Length / 4).Any(k => v[k * 4] is < 0 or > 1)))
+                    Bad("bad-character-spring", $"spring {s.Id}: fabric is per strand bone points of t (0 to 1), x, y, z");
             }
             foreach (var k in c.Springs.Capsules)
             {

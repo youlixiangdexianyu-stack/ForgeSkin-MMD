@@ -318,7 +318,7 @@ static class Characters
             var shells = new List<ChainShell>();
             foreach (var s in character.Springs.Shell)
                 if (target.Bone(Array.IndexOf(ClipRig.Names, s.Joint)) is { } on && CharacterRig.ShellPoints(s.Data, out var points))
-                    shells.Add(new ChainShell(on, new ChainShellData(points)));
+                    shells.Add(new ChainShell(on, new ChainShellData(points) { Drives = CharacterRig.DrivesChains(s.Joint) }));
 
             foreach (var chain in character.Springs.Chains)
             {
@@ -332,7 +332,8 @@ static class Characters
                 spec.Radius *= size;
                 spec.Gravity *= size;
                 worn.Chains.Add(Chains.Bind(anchor, chain.Strands.Select(s => s.Select(n => bones[n]).ToArray()).ToList(), spec, capsules,
-                    chain.LinkSide, chain.Loop, agent != null ? agent.transform : body.transform, Near(shells, chain, bones, 0.25f * size), chain.Id));
+                    chain.LinkSide, chain.Loop, agent != null ? agent.transform : body.transform, Near(shells, chain, bones, 0.25f * size), chain.Id,
+                    chain.Fabric?.ToDictionary(f => bones[f.Key], f => f.Value)));
             }
             worn.Copy = Models.CopyPose(body, target, HumanRig.ArmReach, label) ?? throw new InvalidOperationException("the body's pose cannot be copied (ForgeCore logged why)");
             worn.Copy.Follow();

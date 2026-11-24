@@ -170,15 +170,11 @@ function Shell() {
   const picked = useCharacter((s) => s.picked);
   const surfaces = useMemo(
     () =>
-      shellPoints().map(({ joint, bone, points, tris }) => {
+      shellPoints().map(({ joint, bone, points, normals, tris }) => {
         // Lifted off the skin along its own normal: the surface is the model's face itself, and drawn exactly on it the two fight for
         // the same depth (a mottle of skin and shell) and every millimetre the skin wins as the joints blend reads as a hole.
         const lifted = new Float32Array(points.length);
-        for (let i = 0; i < points.length; i += 6) {
-          lifted[i] = points[i]! + points[i + 3]! * SHELL_LIFT;
-          lifted[i + 1] = points[i + 1]! + points[i + 4]! * SHELL_LIFT;
-          lifted[i + 2] = points[i + 2]! + points[i + 5]! * SHELL_LIFT;
-        }
+        for (let i = 0; i < points.length; i++) lifted[i] = points[i]! + normals[i]! * SHELL_LIFT;
         const geometry = new BufferGeometry();
         geometry.setAttribute('position', new BufferAttribute(lifted, 3));
         if (tris) geometry.setIndex(new BufferAttribute(tris, 1));

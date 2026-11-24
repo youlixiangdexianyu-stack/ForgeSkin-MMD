@@ -126,6 +126,11 @@ public sealed class SpringChain
     public int? Iterations { get; set; }
     /// <summary>Exact-length sweeps a sub-step, 1 to 8.</summary>
     public int? LengthPasses { get; set; }
+    /// <summary>Where the cloth each strand bone carries lies (the editor measures it from the skin weights): bone name to points of four
+    /// numbers each, t, x, y, z — t of the way from the bone to the next one in its strand (past the last, to its tip), then (x, y, z)
+    /// off that point in the bone's own space. A set with fabric keeps those points out of the body's skin instead of its bones, which
+    /// may lie inside the legs.</summary>
+    public Dictionary<string, float[]>? Fabric { get; set; }
 
     // The ForgeCore spec: the preset with the author's values over it.
     public ChainSpec Spec()
@@ -248,6 +253,10 @@ public static class CharacterRig
         if (!float.IsFinite(character.Height) || character.Height <= 0) wrong += $" height {character.Height} is not a positive number.";
         return wrong.Trim();
     }
+
+    // The body joints whose surfaces drive the chains hanging against them (ChainShellData.Drives): the legs a skirt or a twin tail
+    // swings with. The editor's preview and the game both take it from here.
+    public static bool DrivesChains(string? joint) => joint is "leftUpperLeg" or "leftLowerLeg" or "rightUpperLeg" or "rightLowerLeg";
 
     // A shell's points as doubles, six per point: base64 of x, y, z, nx, ny, nz float32 little-endian. False when the data is not.
     public static bool ShellPoints(string data, out double[] points)

@@ -13,6 +13,7 @@ import {
   BufferGeometry,
   Float32BufferAttribute,
   Group as GroupObject,
+  Matrix3,
   Matrix4,
   MeshStandardMaterial,
   Object3D,
@@ -1630,6 +1631,7 @@ export function springEntry(spring: Spring) {
     step: spring.step,
     iterations: spring.iterations,
     lengthPasses: spring.lengthPasses,
+    fabric: fabricEntry(spring),
   };
 }
 
@@ -2199,13 +2201,142 @@ export function shellPoints(): { joint: string; bone: Bone; points: Float32Array
   });
 }
 
+/** Per bone, the vertices it moves most (a weight of a half or more), in its own bind-pose space (x, y, z each): the cloth each bone
+ * carries. Measured once per model, from the bind data alone, so a pose playing when it is asked for does not move it. */
+const carried = new WeakMap<Group, Map<Bone, number[]>>();
+function carriedBy(): Map<Bone, number[]> {
+  const had = scene && carried.get(scene);
+  if (!scene || had) return had ?? new Map();
+  const verts = new Map<Bone, number[]>();
+  const p = new Vector3();
+  scene.traverse((o) => {
+    const mesh = o as SkinnedMesh;
+    if (!mesh.isSkinnedMesh || !mesh.geometry || !mesh.skeleton) return;
+    const position = mesh.geometry.getAttribute('position');
+    const skinIndex = mesh.geometry.getAttribute('skinIndex');
+    const skinWeight = mesh.geometry.getAttribute('skinWeight');
+    if (!position || !skinIndex || !skinWeight) return;
+    // bone space = boneInverse x bindMatrix x the vertex as stored
+    const toBone = mesh.skeleton.boneInverses.map((inverse) => new Matrix4().multiplyMatrices(inverse, mesh.bindMatrix));
+    for (let i = 0; i < position.count; i++) {
+      let best = skinIndex.getX(i),
+        weight = skinWeight.getX(i);
+      if (skinWeight.getY(i) > weight) (weight = skinWeight.getY(i)), (best = skinIndex.getY(i));
+      if (skinWeight.getZ(i) > weight) (weight = skinWeight.getZ(i)), (best = skinIndex.getZ(i));
+      if (skinWeight.getW(i) > weight) (weight = skinWeight.getW(i)), (best = skinIndex.getW(i));
+      const bone = mesh.skeleton.bones[best];
+      if (weight < 0.5 || !bone || !toBone[best]) continue;
+      p.fromBufferAttribute(position, i).applyMatrix4(toBone[best]!);
+      const list = verts.get(bone) ?? [];
+      list.push(p.x, p.y, p.z);
+      verts.set(bone, list);
+    }
+  });
+  carried.set(scene, verts);
+  return verts;
+}
+
+/** Fabric points a bone's cloth is sampled at: across the panel's width (its widest spread round the bone) and along the bone. */
+const ACROSS = 3,
+  ALONG = 2;
+
+/** Where the cloth a strand's bones carry lies, per bone (null: it carries none, or its piece cannot be measured): points of `t` of the
+ * way from the bone to the next one (past the last, to its tip), then (x, y, z) off that point in the bone's own space — a frame the
+ * game shares (Core/Character.cs SpringChain.Fabric). Each point is the middle of a part of the cloth, ACROSS its width by ALONG the
+ * bone, so a leg that comes up at a panel's edge meets a point there. Read from the bind pose: a strand runs parent to child. */
+function fabricOf(bones: Bone[]): (number[] | null)[] {
+  const all = carriedBy();
+  const local = (bone: Bone) => new Matrix4().compose(bindPosition.get(bone) ?? bone.position, bindLocal.get(bone) ?? bone.quaternion, bone.scale);
+  return bones.map((bone, j) => {
+    const v = all.get(bone);
+    if (!v || v.length < 9) return null;
+    const next = bones[j + 1],
+      before = bones[j - 1];
+    let tip: Vector3 | null = null;
+    if (next?.parent === bone) tip = (bindPosition.get(next) ?? next.position).clone();
+    else if (!next && before && bone.parent === before) tip = new Vector3().applyMatrix4(local(bone).invert()).negate();
+    if (!tip || tip.lengthSq() < 1e-12) {
+      console.warn(`fabric: ${bone.name} is not a child of the bone above it in its strand; its cloth is not measured`);
+      return null;
+    }
+    // Each vertex as t along the piece and its offset off it; the widest way the offsets spread (a power iteration on their spread).
+    const n = v.length / 3,
+      lengthSq = tip.lengthSq(),
+      ts = new Float64Array(n),
+      off = new Float64Array(v.length),
+      mean = [0, 0, 0];
+    for (let i = 0; i < n; i++) {
+      const t = Math.min(1, Math.max(0, (v[i * 3]! * tip.x + v[i * 3 + 1]! * tip.y + v[i * 3 + 2]! * tip.z) / lengthSq));
+      ts[i] = t;
+      off[i * 3] = v[i * 3]! - tip.x * t;
+      off[i * 3 + 1] = v[i * 3 + 1]! - tip.y * t;
+      off[i * 3 + 2] = v[i * 3 + 2]! - tip.z * t;
+      for (let c = 0; c < 3; c++) mean[c]! += off[i * 3 + c]! / n;
+    }
+    let wide = [1, 0.5, 0.25];
+    for (let round = 0; round < 12; round++) {
+      const sum = [0, 0, 0];
+      for (let i = 0; i < n; i++) {
+        const dx = off[i * 3]! - mean[0]!,
+          dy = off[i * 3 + 1]! - mean[1]!,
+          dz = off[i * 3 + 2]! - mean[2]!;
+        const along = dx * wide[0]! + dy * wide[1]! + dz * wide[2]!;
+        sum[0]! += dx * along;
+        sum[1]! += dy * along;
+        sum[2]! += dz * along;
+      }
+      const l = Math.hypot(sum[0]!, sum[1]!, sum[2]!);
+      if (l < 1e-12) break;
+      wide = sum.map((x) => x / l);
+    }
+    // Parts by rank across the width and along the bone; each part's middle is a point.
+    const across = new Float64Array(n);
+    for (let i = 0; i < n; i++) across[i] = (off[i * 3]! - mean[0]!) * wide[0]! + (off[i * 3 + 1]! - mean[1]!) * wide[1]! + (off[i * 3 + 2]! - mean[2]!) * wide[2]!;
+    const rank = (values: Float64Array, parts: number) => {
+      const part = new Uint8Array(n);
+      [...values.keys()].sort((a, b) => values[a]! - values[b]!).forEach((i, r) => (part[i] = Math.min(parts - 1, Math.floor((r * parts) / n))));
+      return part;
+    };
+    const side = rank(across, ACROSS),
+      down = rank(ts, ALONG);
+    const out: number[] = [];
+    for (let a = 0; a < ACROSS; a++)
+      for (let b = 0; b < ALONG; b++) {
+        const sum = [0, 0, 0, 0];
+        let count = 0;
+        for (let i = 0; i < n; i++) {
+          if (side[i] !== a || down[i] !== b) continue;
+          sum[0]! += ts[i]!;
+          sum[1]! += off[i * 3]!;
+          sum[2]! += off[i * 3 + 1]!;
+          sum[3]! += off[i * 3 + 2]!;
+          count++;
+        }
+        if (count >= 3) out.push(...sum.map((q) => Math.round((q / count) * 1e5) / 1e5));
+      }
+    return out.length ? out : null;
+  });
+}
+
+/** A cloth set's fabric as the document holds it: bone name to its points, t, x, y, z each (fabricOf). Hair and tails carry none: their strands
+ * are kept out of the body themselves. */
+function fabricEntry(spring: Spring): Record<string, number[]> | undefined {
+  if (spring.kind !== 'skirt' || !scene) return undefined;
+  const out: Record<string, number[]> = {};
+  for (const names of spring.strands) {
+    const bones = names.map((n) => byName.get(n)).filter((b): b is Bone => !!b);
+    fabricOf(bones).forEach((f, j) => f && (out[bones[j]!.name] = f));
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** One set's chain at rest: per strand its bones and a tip past the last one, as nodes in the anchor's frame, and the tip's place
  * in the last bone's frame (where the drawn bone points). */
 interface Chain {
   spring: Spring;
   anchor: Object3D;
   strands: { bones: Bone[]; nodes: number[]; tip: Vector3 }[];
-  nodes: { parent: number; at: number[] }[];
+  nodes: { parent: number; at: number[]; fabric?: number[] }[];
 }
 
 function chainOf(spring: Spring): Chain | null {
@@ -2228,10 +2359,20 @@ function chainOf(spring: Spring): Chain | null {
     const before = at.length > 1 ? at[at.length - 2] : (bones[0].parent?.getWorldPosition(new Vector3()) ?? last.clone().add(new Vector3(0, 0.05, 0)));
     const step = last.clone().sub(before);
     const tip = last.clone().add(step.lengthSq() > 1e-10 ? step : new Vector3(0, -0.05, 0));
+    // A cloth set's fabric per piece: t, then the bone-space offset carried into the anchor's frame (the bone's world turn and
+    // scale, less the anchor's turn), as the game does with the same document values (Native/Chains.cs).
+    const fabric = spring.kind === 'skirt' ? fabricOf(bones) : [];
     const ids: number[] = [];
     [...at, tip].forEach((w, i) => {
       ids.push(nodes.length);
-      nodes.push({ parent: i === 0 ? -1 : nodes.length - 1, at: local(w) });
+      const f = i > 0 ? fabric[i - 1] : null;
+      const turn = f && new Matrix3().setFromMatrix4(bones[i - 1]!.matrixWorld);
+      const points: number[] = [];
+      for (let k = 0; f && turn && k + 3 < f.length; k += 4) {
+        const off = new Vector3(f[k + 1], f[k + 2], f[k + 3]).applyMatrix3(turn).applyQuaternion(inverse);
+        points.push(f[k]!, off.x, off.y, off.z);
+      }
+      nodes.push({ parent: i === 0 ? -1 : nodes.length - 1, at: local(w), ...(points.length ? { fabric: points } : {}) });
     });
     strands.push({ bones, nodes: ids, tip: bones[bones.length - 1].worldToLocal(tip.clone()) });
   }

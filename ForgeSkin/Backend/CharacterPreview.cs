@@ -12,11 +12,13 @@ namespace ForgeSkin.Backend;
 // leaves out, ForgeCore's rig notes), and character.links gives the motion preview the game's pose-copy links for it (HumanRig, PoseSolver).
 public static class CharacterPreview
 {
-    public sealed record Node(int Parent, double[] At);
+    /// <summary>A node at `At` in the anchor's frame; `Fabric` (t, x, y, z per point) is where the cloth on the piece above it lies (ChainShape.Fabric).</summary>
+    public sealed record Node(int Parent, double[] At, double[]? Fabric = null);
     public sealed record Frame(double Time, double[] M, double[] Body, List<double[]>? Capsules = null, List<double[]>? Shells = null);
     /// <summary>A surface: the document's points, and where its bone stands in the model's bind pose (the depth every node keeps
-    /// from it is measured there, not on the first frame of a clip).</summary>
-    public sealed record Shell(string Data, double[]? Rest = null, string? Tris = null);
+    /// from it is measured there, not on the first frame of a clip). `Joint` is the canonical joint it is the skin of; a leg drives the
+    /// chains hanging against it (CharacterRig.DrivesChains).</summary>
+    public sealed record Shell(string Data, double[]? Rest = null, string? Tris = null, string? Joint = null);
 
     public const int MaxFrames = 1200;
     static readonly double[] ZeroMatrix = new double[16];
@@ -60,7 +62,9 @@ public static class CharacterPreview
             double dx = n.At[0] - p[0], dy = n.At[1] - p[1], dz = n.At[2] - p[2];
             double length = Math.Max(Math.Sqrt(dx * dx + dy * dy + dz * dz), ChainState.MinPiece);
             if (dx == 0 && dy == 0 && dz == 0) dy = -1; // two bones on one point: hang the piece straight down
-            shape.Add(n.Parent, length, dx, dy, dz);
+            var id = shape.Add(n.Parent, length, dx, dy, dz);
+            if (n.Fabric is { } f)
+                for (var k = 0; k + 3 < f.Length; k += 4) shape.Fabric(id, f[k], f[k + 1], f[k + 2], f[k + 3]);
         }
         if (chain.LinkSide && strands is { Count: > 1 }) shape.LinkSide(strands, chain.Loop);
         var state = new ChainState(shape, spec) { Scale = scale ?? 1 };
@@ -68,7 +72,7 @@ public static class CharacterPreview
         state.Shells = given.Count;
         for (var i = 0; i < given.Count; i++)
             if (CharacterRig.ShellPoints(given[i].Data, out var at))
-                state.SetShellData(i, new ChainShellData(at));
+                state.SetShellData(i, new ChainShellData(at) { Drives = CharacterRig.DrivesChains(given[i].Joint) });
 
         if (state.Shells > 0)
         {

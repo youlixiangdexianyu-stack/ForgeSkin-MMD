@@ -61,7 +61,7 @@ public sealed class ChainBinding
     private const float MaxSwingDeg = 170f;
     private const float MaxSwingStepDeg = 120f;
 
-    internal ChainBinding(Transform anchor, IReadOnlyList<Transform[]> strands, ChainSpec spec, IReadOnlyList<ChainCapsule>? capsules, IReadOnlyList<ChainShell>? shells, bool linkSide, bool loop, Transform? body, string? label = null)
+    internal ChainBinding(Transform anchor, IReadOnlyList<Transform[]> strands, ChainSpec spec, IReadOnlyList<ChainCapsule>? capsules, IReadOnlyList<ChainShell>? shells, bool linkSide, bool loop, Transform? body, string? label = null, IReadOnlyDictionary<Transform, float[]>? fabric = null)
     {
         _anchor = anchor;
         _body = body;
@@ -89,6 +89,13 @@ public sealed class ChainBinding
                 Vector3 from = strand[j - 1].position, to = j < strand.Length ? strand[j].position : from + (from - strand[j - 2].position);
                 var d = turnBack * (to - from);
                 ids[j] = shape.Add(ids[j - 1], Math.Max(d.magnitude, 1e-4), d.x, d.y, d.z);
+                // The cloth the bone carries: per point t down its piece, its offset from the bone's own space into the anchor's frame.
+                if (fabric != null && fabric.TryGetValue(strand[j - 1], out var f))
+                    for (int k = 0; k + 3 < f.Length; k += 4)
+                    {
+                        var off = turnBack * strand[j - 1].TransformVector(f[k + 1], f[k + 2], f[k + 3]);
+                        shape.Fabric(ids[j], f[k], off.x, off.y, off.z);
+                    }
             }
             for (int j = 0; j < strand.Length; j++)
             {
@@ -319,11 +326,13 @@ public static class Chains
     /// <summary>Binds strands of bones (each from its root bone down, at least two) to one chain set hanging from `anchor` (the head, the
     /// hips), shaped as the bones are now. `linkSide` links neighbouring strands node to node (a skirt), `loop` also the last to the first.
     /// `body` is what the chain rides along with (the character's root; the anchor when null). `capsules` and `shells` are what the chain
-    /// is kept out of: the body as capsules, or as its skin (a surface); a character gives one or the other.</summary>
+    /// is kept out of: the body as capsules, or as its skin (a surface); a character gives one or the other. `fabric`: per bone the cloth it
+    /// carries (points of t down its piece, then x, y, z in the bone's own space), kept out of the skin instead of the bone (ChainShape.Fabric).</summary>
     public static ChainBinding Bind(Transform anchor, IReadOnlyList<Transform[]> strands, ChainSpec spec, IReadOnlyList<ChainCapsule>? capsules = null,
-        bool linkSide = false, bool loop = false, Transform? body = null, IReadOnlyList<ChainShell>? shells = null, string? label = null)
+        bool linkSide = false, bool loop = false, Transform? body = null, IReadOnlyList<ChainShell>? shells = null, string? label = null,
+        IReadOnlyDictionary<Transform, float[]>? fabric = null)
     {
-        var binding = new ChainBinding(anchor, strands, spec, capsules, shells, linkSide, loop, body, label);
+        var binding = new ChainBinding(anchor, strands, spec, capsules, shells, linkSide, loop, body, label, fabric);
         Live.Add(binding);
         return binding;
     }
